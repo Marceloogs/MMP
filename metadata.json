@@ -1,0 +1,7 @@
+{
+  "name": " 05 MecanicPro - Gestão de Oficina",
+  "description": "Uma plataforma moderna de gestão para oficinas mecânicas com dashboard intuitivo, acompanhamento de serviços em tempo real e gestão de clientes.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
