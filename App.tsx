@@ -25,6 +25,7 @@ const STORAGE_KEY = 'mecanicpro_v1_data';
 const App: React.FC = () => {
   const [session, setSession] = useState<Session | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -63,14 +64,15 @@ const App: React.FC = () => {
 
     const fetchData = async () => {
       try {
+        setLoadError(null);
         console.log("Iniciando carregamento de dados...");
         // 1. Carregar do Supabase (Paralelo para velocidade)
         const [
-          { data: remServices },
-          { data: remTransactions },
-          { data: remCustomers },
-          { data: remInventory },
-          { data: remSettings }
+          { data: remServices, error: errServices },
+          { data: remTransactions, error: errTransactions },
+          { data: remCustomers, error: errCustomers },
+          { data: remInventory, error: errInventory },
+          { data: remSettings, error: errSettings }
         ] = await Promise.all([
           supabase.from('services').select('*').order('created_at', { ascending: false }),
           supabase.from('financial_transactions').select('*').order('created_at', { ascending: false }),
@@ -78,6 +80,10 @@ const App: React.FC = () => {
           supabase.from('inventory_items').select('*').order('created_at', { ascending: false }),
           supabase.from('settings').select('*').maybeSingle()
         ]);
+
+        if (errServices || errTransactions || errCustomers || errInventory || errSettings) {
+          throw new Error("Falha ao carregar alguns dados do servidor.");
+        }
 
         const hasRemoteData = (remServices?.length || 0) + (remTransactions?.length || 0) + (remCustomers?.length || 0) + (remInventory?.length || 0) + (remSettings ? 1 : 0) > 0;
 
@@ -132,45 +138,51 @@ const App: React.FC = () => {
             if (p.nextServiceNumber) setNextServiceNumber(p.nextServiceNumber || 1);
             if (p.finishedCountToday) setFinishedCountToday(p.finishedCountToday || 0);
 
-            // Upload em segundo plano (não bloqueia UI se isLoaded for setado)
+            // Upload em segundo plano
             const migrationData = async () => {
-              if (p.services || p.serviceHistory) {
-                await syncTable('services', [...(p.services || []), ...(p.serviceHistory || [])].map((s: any) => ({
-                  id: s.id, user_id: session.user.id, customer_name: s.customerName, vehicle: s.vehicle, plate: s.plate, description: s.description, execution_description: s.executionDescription, status: s.status, budget_items: s.budgetItems || [], discount: s.discount || 0, mileage: s.mileage, finished_date: s.finishedDate
-                })));
+              try {
+                if (p.services || p.serviceHistory) {
+                  await syncTable('services', [...(p.services || []), ...(p.serviceHistory || [])].map((s: any) => ({
+                    id: s.id, user_id: session.user.id, customer_name: s.customerName, vehicle: s.vehicle, plate: s.plate, description: s.description, execution_description: s.executionDescription, status: s.status, budget_items: s.budgetItems || [], discount: s.discount || 0, mileage: s.mileage, finished_date: s.finishedDate
+                  })));
+                }
+                // ... rest of migration logic (transactions, customers, inventory, settings)
+                if (p.transactions?.length > 0) {
+                  await syncTable('financial_transactions', p.transactions.map((t: any) => ({
+                    id: t.id, user_id: session.user.id, title: t.title, subtitle: t.subtitle, amount: t.amount, type: t.type, category: t.category, method: t.method, time: t.time, date_label: t.date, iso_date: t.iso_date, status: t.status
+                  })));
+                }
+                if (p.customers?.length > 0) {
+                  await syncTable('customers', p.customers.map((c: any) => ({
+                    id: c.id, user_id: session.user.id, name: c.name, document: c.document, phone: c.phone, email: c.email, address: c.address, vehicles: c.vehicles || []
+                  })));
+                }
+                if (p.inventory?.length > 0) {
+                  await syncTable('inventory_items', p.inventory.map((i: any) => ({
+                    id: i.id, user_id: session.user.id, name: i.name, code: i.code, category: i.category, cost_price: i.costPrice, sale_price: i.salePrice, quantity: i.quantity, min_quantity: i.minQuantity, location: i.location, image_url: i.imageUrl
+                  })));
+                }
+                await supabase.from('settings').upsert({
+                  user_id: session.user.id,
+                  workshop_info: p.workshopInfo || {},
+                  next_service_number: p.nextServiceNumber || 1,
+                  finished_count_today: p.finishedCountToday || 0,
+                  last_reset_date: new Date().toISOString().split('T')[0]
+                });
+                console.log("Migração inicial concluída.");
+              } catch (e) {
+                console.error("Erro no upload da migração:", e);
               }
-              if (p.transactions?.length > 0) {
-                await syncTable('financial_transactions', p.transactions.map((t: any) => ({
-                  id: t.id, user_id: session.user.id, title: t.title, subtitle: t.subtitle, amount: t.amount, type: t.type, category: t.category, method: t.method, time: t.time, date_label: t.date, iso_date: t.iso_date, status: t.status
-                })));
-              }
-              if (p.customers?.length > 0) {
-                await syncTable('customers', p.customers.map((c: any) => ({
-                  id: c.id, user_id: session.user.id, name: c.name, document: c.document, phone: c.phone, email: c.email, address: c.address, vehicles: c.vehicles || []
-                })));
-              }
-              if (p.inventory?.length > 0) {
-                await syncTable('inventory_items', p.inventory.map((i: any) => ({
-                  id: i.id, user_id: session.user.id, name: i.name, code: i.code, category: i.category, cost_price: i.costPrice, sale_price: i.salePrice, quantity: i.quantity, min_quantity: i.minQuantity, location: i.location, image_url: i.imageUrl
-                })));
-              }
-              await supabase.from('settings').upsert({
-                user_id: session.user.id,
-                workshop_info: p.workshopInfo || {},
-                next_service_number: p.nextServiceNumber || 1,
-                finished_count_today: p.finishedCountToday || 0,
-                last_reset_date: new Date().toISOString().split('T')[0]
-              });
-              console.log("Migração inicial concluída.");
             };
             migrationData();
           }
         }
-      } catch (error) {
-        console.error("Erro crítico na sincronização:", error);
-      } finally {
         setIsLoaded(true);
-        console.log("Estado de carregamento finalizado.");
+        console.log("Estado de carregamento finalizado com sucesso.");
+      } catch (error: any) {
+        console.error("Erro crítico na sincronização:", error);
+        setLoadError(error.message || "Erro de conexão com o servidor.");
+        // NÃO definir isLoaded como true se houve erro crítico
       }
     };
 
@@ -249,7 +261,16 @@ const App: React.FC = () => {
 
     const saveTimer = setTimeout(() => {
       saveSettingsToCloud(workshopInfo, nextServiceNumber, finishedCountToday);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ workshopInfo, nextServiceNumber, finishedCountToday }));
+
+      // Merge com o que já existe no LocalStorage para não perder dados
+      const currentLocal = localStorage.getItem(STORAGE_KEY);
+      const existing = currentLocal ? JSON.parse(currentLocal) : {};
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ...existing,
+        workshopInfo,
+        nextServiceNumber,
+        finishedCountToday
+      }));
     }, 1000); // Debounce de 1s para evitar excesso de requisições
 
     return () => clearTimeout(saveTimer);
@@ -335,6 +356,31 @@ const App: React.FC = () => {
 
   if (!session) {
     return <AuthScreen />;
+  }
+
+  if (!isLoaded && !loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0B1118] text-white">
+        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-lg font-medium">Carregando seus dados...</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0B1118] text-white p-6 text-center">
+        <div className="text-red-500 text-5xl mb-4">⚠️</div>
+        <h2 className="text-2xl font-bold mb-2">Erro de Conexão</h2>
+        <p className="text-gray-400 mb-6">{loadError}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition-colors"
+        >
+          Tentar Novamente
+        </button>
+      </div>
+    );
   }
 
   return (
